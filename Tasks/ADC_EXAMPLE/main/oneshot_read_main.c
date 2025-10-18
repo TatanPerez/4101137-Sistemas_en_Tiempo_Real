@@ -13,6 +13,11 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
+#include <math.h>
+
+#ifndef NAN
+#define NAN (0.0/0.0)
+#endif
 
 const static char *TAG = "EXAMPLE";
 
@@ -25,7 +30,7 @@ const static char *TAG = "EXAMPLE";
 #define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_5
 #else
 #define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_2
-#define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_3
+#define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_1
 #endif
 
 #if (SOC_ADC_PERIPH_NUM >= 2) && !CONFIG_IDF_TARGET_ESP32C3
@@ -92,12 +97,36 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_ADC2_CHAN0, &config));
 #endif  //#if EXAMPLE_USE_ADC2
 
+    //-------------ADC Read---------------//
+    const double V_in = 3.3;        // Voltaje del pin 3V3 de la ESP32-C6
+    const double R_fixed = 10000.0;       // Resistencia fija 10 kΩ
+    const double R0 = 10000.0;         // NTC 10D-20: 10 kΩ a 25 °C
+    const double B = 3950.0;        // Valor real típico para NTC MF52AT 10k ohm
+    const double T0 = 298.15;       // 25 °C en Kelvin
+
     while (1) {
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
         if (do_calibration1_chan0) {
             ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
             ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, voltage[0][0]);
+            
+            double V_out = voltage[0][0] / 1000.0;  // Convertir mV a V
+            ESP_LOGI(TAG, "Voltage: %.3f V", V_out);
+
+            double R_ntc = NAN;
+            if (V_out > 0 && V_out < V_in) {
+                R_ntc = R_fixed * (V_out / (V_in - V_out));
+            }
+
+            double tempC = NAN;
+            if (!isnan(R_ntc) && R_ntc > 0) {
+                double tempK = (B * T0) / (B + (T0 * log(R_ntc / R0)));
+                tempC = tempK - 273.15;
+            }
+
+            ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
+            ESP_LOGI(TAG, "Temp: %.2f °C", tempC);
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
 
