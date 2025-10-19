@@ -14,12 +14,13 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include <math.h>
+#include "driver/gpio.h"
 
 #ifndef NAN
 #define NAN (0.0/0.0)
 #endif
 
-const static char *TAG = "EXAMPLE";
+const static char *TAG = "EXAMPLE_NTC";
 
 /*---------------------------------------------------------------
         ADC General Macros
@@ -51,7 +52,10 @@ const static char *TAG = "EXAMPLE";
 #endif  //#if EXAMPLE_USE_ADC2
 
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_12
-
+#define BUTTON_GPIO GPIO_NUM_9  // GPIO del botón para habilitar/deshabilitar impresión
+/*---------------------------------------------------------------
+        ADC Example Variables
+---------------------------------------------------------------*/
 static int adc_raw[2][10];
 static int voltage[2][10];
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
@@ -104,7 +108,26 @@ void app_main(void)
     const double B = 3950.0;        // Valor real típico para NTC MF52AT 10k ohm
     const double T0 = 298.15;       // 25 °C en Kelvin
 
+    // Configurar GPIO del botón como entrada con pull-up
+    gpio_config_t btn_config = {
+        .pin_bit_mask = (1ULL << BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    ESP_ERROR_CHECK(gpio_config(&btn_config));
+    bool print_enabled = true; // Se inicia con impresión habilitada
+    int last_btn_state = 1;  // Estado inicial del botón (asumiendo que no está presionado)
+
     while (1) {
+        int current_btn_state = gpio_get_level(BUTTON_GPIO);
+        // if (current_btn_state != last_btn_state) {
+        if (last_btn_state == 1 && current_btn_state == 0) {    // Detectar flanco de bajada
+            print_enabled = !print_enabled;
+            ESP_LOGI(TAG, "Print %s", print_enabled ? "ENABLED" : "DISABLED");
+        }
+        last_btn_state = current_btn_state;
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
         if (do_calibration1_chan0) {
@@ -125,8 +148,10 @@ void app_main(void)
                 tempC = tempK - 273.15;
             }
 
-            ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
-            ESP_LOGI(TAG, "Temp: %.2f °C", tempC);
+            if (print_enabled) {
+                ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
+                ESP_LOGI(TAG, "Temp: %.2f °C", tempC);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
 
