@@ -119,6 +119,7 @@ void app_main(void)
     ESP_ERROR_CHECK(gpio_config(&btn_config));
     bool print_enabled = true; // Se inicia con impresión habilitada
     int last_btn_state = 1;  // Estado inicial del botón (asumiendo que no está presionado)
+    TickType_t last_print_time = 0;  // Para controlar la frecuencia de impresión
 
     while (1) {
         int current_btn_state = gpio_get_level(BUTTON_GPIO);
@@ -147,10 +148,11 @@ void app_main(void)
                 double tempK = (B * T0) / (B + (T0 * log(R_ntc / R0)));
                 tempC = tempK - 273.15;
             }
-
-            if (print_enabled) {
-                ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
+            ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
+            TickType_t now = xTaskGetTickCount();
+            if (print_enabled && (now - last_print_time >= pdMS_TO_TICKS(2000))) {
                 ESP_LOGI(TAG, "Temp: %.2f °C", tempC);
+                last_print_time = now;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
