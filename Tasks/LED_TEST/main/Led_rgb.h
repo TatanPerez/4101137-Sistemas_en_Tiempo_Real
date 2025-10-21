@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "driver/ledc.h"    // Necesario para LEDC_TIMER_13_BIT, etc.
 
+// Configuración del LEDC para el control del LED RGB anodo común con PWM
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
 #define LEDC_DUTY_RES           LEDC_TIMER_13_BIT
@@ -20,13 +21,6 @@
 #define GREEN_CHANNEL   LEDC_CHANNEL_1
 #define BLUE_CHANNEL    LEDC_CHANNEL_2
 
-// Brillos comunes para facilitar uso (puedes usar cualquiera de 0 a LEDC_DUTY_MAX)
-#define BRILLO_0    0
-#define BRILLO_25   (LEDC_DUTY_MAX * 25 / 100)
-#define BRILLO_50   (LEDC_DUTY_MAX * 50 / 100)
-#define BRILLO_75   (LEDC_DUTY_MAX * 75 / 100)
-#define BRILLO_100  (LEDC_DUTY_MAX)
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +34,9 @@ void led_rgb_set_color(uint16_t red, uint16_t green, uint16_t blue);
 
 // Opcional: Ajusta color pasando porcentaje 0-100 para cada canal
 void led_rgb_set_color_percent(uint8_t red_percent, uint8_t green_percent, uint8_t blue_percent);
+
+// Crea una tarea que lee por UART y ajusta color RGB
+void led_rgb_uart_task(void *pvParameters);
 
 #ifdef __cplusplus
 }
