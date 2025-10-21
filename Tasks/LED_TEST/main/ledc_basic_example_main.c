@@ -22,4 +22,5 @@ void app_main(void) {
     // Inicializamos el módulo RGB
     led_rgb_init();
     xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, NULL, 5, NULL);  // Inicia UART
+    xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 2048, NULL, 5, NULL);
 }

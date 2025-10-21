@@ -4,14 +4,28 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_adc/adc_oneshot.h"
+#include "driver/gpio.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+
 // #include "string.h"
 
 #define UART_NUM            UART_NUM_0
 #define UART_BUF_SIZE       128
+#define ADC_AVG_SAMPLES 5   // Número de muestras para promediado ADC
 
 static const char *TAG = "LED_RGB_UART";
+static const char *TAG_POT = "LED_RGB_POT";
+
+// Variables globales para el color base definido por UART
+static uint8_t base_r_percent = 100;
+static uint8_t base_g_percent = 100;
+static uint8_t base_b_percent = 100;
+
 
 // ================= PWM: LED RGB Ánodo común ===================
+
 // Configura un canal LEDC PWM para el LED RGB
 static void ledc_setup_channel(ledc_channel_t channel, int gpio_num) {
     ledc_channel_config_t ledc_channel = {
@@ -64,7 +78,11 @@ void led_rgb_set_color_percent(uint8_t red_percent, uint8_t green_percent, uint8
 
     led_rgb_set_color(red, green, blue);
 }
-// Tarea que lee comandos por UART para ajustar el color del LED RGB en formato Rxx Gyy Bzz
+/*-------------------------------------------------------------------------------------------------------
+    Tarea que lee comandos por UART para ajustar el color del LED RGB
+    Formato comando: Rxx Gyy Bzz (ej: R100 G50 B25)
+--------------------------------------------------------------------------------------------------------- */    
+
 void led_rgb_uart_task(void *pvParameters) {
     uart_config_t uart_config = {
         .baud_rate = 115200,                    // Velocidad típica de consola
@@ -100,6 +118,9 @@ void led_rgb_uart_task(void *pvParameters) {
                     int matched = sscanf(input_line, "R%d G%d B%d", &r, &g, &b);
 
                     if (matched == 3 && r >= 0 && r <= 100 && g >= 0 && g <= 100 && b >= 0 && b <= 100) {   // Comando válido
+                        base_r_percent = r;
+                        base_g_percent = g;
+                        base_b_percent = b;
                         led_rgb_set_color_percent(r, g, b);
                         ESP_LOGI(TAG, "-> Comando ejecutado: %s", input_line);
                         ESP_LOGI(TAG, "-> LED ajustado a R:%d%% G:%d%% B:%d%%", r, g, b);
@@ -124,5 +145,67 @@ void led_rgb_uart_task(void *pvParameters) {
                 ESP_LOGI(TAG, "Comando actual: %s", input_line);
             }
         }
+    }
+}
+
+/*-------------------------------------------------------------------------------------------------------
+    Tarea que lee el valor de un potenciómetro vía ADC y ajusta el brillo del LED RGB en consecuencia
+--------------------------------------------------------------------------------------------------------- 
+*/
+void led_rgb_pot_task(void *pvParameters) {
+    // Configuración ADC para ESP32‑C6
+    adc_oneshot_unit_handle_t adc_handle = NULL;
+    adc_oneshot_unit_init_cfg_t init_cfg = {
+        .unit_id = ADC_UNIT,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,          // Rango 0-3.3V
+        .bitwidth = ADC_BITWIDTH_DEFAULT, // 12 bits aprox.
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_CHANNEL, &chan_cfg));
+
+    uint8_t last_percent = 0xFF;
+    int adc_samples[ADC_AVG_SAMPLES] = {0};
+    int sample_index = 0;
+
+    while (1) {
+        int raw = 0;
+        esp_err_t ret = adc_oneshot_read(adc_handle, ADC_CHANNEL, &raw);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG_POT, "Error leyendo ADC: %d", ret);
+            vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
+            continue;
+        }
+        adc_samples[sample_index++] = raw;
+        if (sample_index >= ADC_AVG_SAMPLES) sample_index = 0;
+
+        int sum = 0;
+        for (int i = 0; i < ADC_AVG_SAMPLES; i++) {
+            sum += adc_samples[i];
+        }
+        int avg_raw = sum / ADC_AVG_SAMPLES;
+
+        // Limitar valor raw para evitar overflow y pasar a porcentaje
+        if (avg_raw > 4095) avg_raw = 4095;
+
+        uint8_t percent = (avg_raw * 100) / 4095;
+
+        if (percent != last_percent) {
+            // Aplica brillo multiplicando por base de color
+            uint8_t r = (base_r_percent * percent) / 100;
+            uint8_t g = (base_g_percent * percent) / 100;
+            uint8_t b = (base_b_percent * percent) / 100;
+
+            led_rgb_set_color_percent(r, g, b);
+
+            ESP_LOGI(TAG_POT, "Potenciómetro: raw=%d, brillo=%d%% → R=%d G=%d B=%d (base R=%d G=%d B=%d)", 
+                     avg_raw, percent, r, g, b, base_r_percent, base_g_percent, base_b_percent);
+
+            last_percent = percent;
+        }
+        vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
     }
 }

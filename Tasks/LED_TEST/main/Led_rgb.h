@@ -21,6 +21,10 @@
 #define GREEN_CHANNEL   LEDC_CHANNEL_1
 #define BLUE_CHANNEL    LEDC_CHANNEL_2
 
+#define ADC_UNIT            ADC_UNIT_1
+#define ADC_CHANNEL         ADC_CHANNEL_3      // por ejemplo ADC_CHANNEL_3 corresponde a GPIO39 en ESP32-C6
+#define POT_TASK_DELAY_MS   200
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +41,10 @@ void led_rgb_set_color_percent(uint8_t red_percent, uint8_t green_percent, uint8
 
 // Crea una tarea que lee por UART y ajusta color RGB
 void led_rgb_uart_task(void *pvParameters);
+
+// Crea una tarea que lee el valor de un potenciómetro vía ADC y ajusta el brillo del LED RGB
+void led_rgb_pot_task(void *pvParameters);
+
 
 #ifdef __cplusplus
 }
