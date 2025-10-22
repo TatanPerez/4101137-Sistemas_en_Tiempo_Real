@@ -16,10 +16,14 @@
 #include <math.h>
 #include "driver/gpio.h"
 #include "oneshot_read.h"
+#include "led_rgb.h"
+// #include "adc_shared.h"
 
 void app_main(void)
 {
-    xTaskCreate(oneshot_read_task, "oneshot_task", 4096, NULL, 5, NULL);
-
+    // Inicializamos el módulo RGB
+    led_rgb_init();
+    xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, NULL, 5, NULL);  // Inicia UART
+    xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 2048, NULL, 5, NULL);
+    xTaskCreate(oneshot_read_task, "oneshot_task", 4096, NULL, 6, NULL);
 }
-

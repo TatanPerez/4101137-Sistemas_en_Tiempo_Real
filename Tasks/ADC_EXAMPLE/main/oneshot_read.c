@@ -10,7 +10,6 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/gpio.h"
-
 #include "oneshot_read.h"
 
 #ifndef NAN
@@ -86,6 +85,9 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 
 void oneshot_read_task(void *pvParameters)
 {
+
+    // adc_task_config_t *cfg = (adc_task_config_t *) pvParameters;
+
     static int adc_raw[2][10];
     static int voltage[2][10];
 
