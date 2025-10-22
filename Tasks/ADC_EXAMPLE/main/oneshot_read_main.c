@@ -19,7 +19,7 @@
 
 void app_main(void)
 {
-    oneshot_read_start();
+    xTaskCreate(oneshot_read_task, "oneshot_task", 4096, NULL, 5, NULL);
 
 }
 

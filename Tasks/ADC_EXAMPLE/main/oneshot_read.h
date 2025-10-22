@@ -37,9 +37,6 @@
 
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_12
 #define BUTTON_GPIO GPIO_NUM_9  // GPIO del botón para habilitar/deshabilitar impresión
-/*---------------------------------------------------------------
-        ADC Example Function Declarations   
----------------------------------------------------------------*/
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,7 +46,7 @@ bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_at
 void example_adc_calibration_deinit(adc_cali_handle_t handle);
 
 // Nueva función que contiene toda la lógica
-void oneshot_read_start(void);
+void oneshot_read_task(void *pvParameters);
 
 #ifdef __cplusplus
 }

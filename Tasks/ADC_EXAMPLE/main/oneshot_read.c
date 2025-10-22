@@ -84,7 +84,7 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 }
 
 
-void oneshot_read_start(void)
+void oneshot_read_task(void *pvParameters)
 {
     static int adc_raw[2][10];
     static int voltage[2][10];
