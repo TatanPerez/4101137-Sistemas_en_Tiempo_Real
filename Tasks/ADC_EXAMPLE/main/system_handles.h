@@ -36,6 +36,7 @@ typedef struct {
     QueueHandle_t temp_queue;          // cola para float (temperatura °C)
     QueueHandle_t temp_range_queue;    // cola para rgb_temp_ranges_t (rango de temp)
     QueueHandle_t led_mode_queue;      // cola para led_mode_t
+    QueueHandle_t print_enable_queue;  // cola para bool (habilitar impresión)
     SemaphoreHandle_t led_mutex;       // mutex para proteger acceso al LED
 } system_handles_t;
 

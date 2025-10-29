@@ -26,10 +26,13 @@ void app_main(void)
     sys.temp_queue       = xQueueCreate(1, sizeof(float));   // solo el último valor importa
     sys.temp_range_queue = xQueueCreate(1, sizeof(rgb_temp_ranges_t)); // solo el último valor importa
     sys.led_mode_queue   = xQueueCreate(1, sizeof(led_mode_t));  // solo el último valor importa
+    sys.print_enable_queue = xQueueCreate(1, sizeof(bool));      // cola para habilitar impresión
     sys.led_mutex        = xSemaphoreCreateMutex();
 
-    configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex);
-
+    // configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex);
+    configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex && sys.print_enable_queue && sys.led_mode_queue);
+    bool print_enabled_init = true;
+    xQueueOverwrite(sys.print_enable_queue, &print_enabled_init);
     // Crear tareas PASANDO &sys como pvParameters
     xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, &sys, 5, NULL);
     xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 4096, &sys, 5, NULL);

@@ -134,6 +134,7 @@ void oneshot_read_task(void *pvParameters)
         int current_btn_state = gpio_get_level(BUTTON_GPIO);
         if (last_btn_state == 1 && current_btn_state == 0) { // flanco de bajada
             print_enabled = !print_enabled;
+            xQueueOverwrite(sys->print_enable_queue, &print_enabled);
             ESP_LOGI(TAG, "Print %s", print_enabled ? "ENABLED" : "DISABLED");
         }
         last_btn_state = current_btn_state;
@@ -166,7 +167,9 @@ void oneshot_read_task(void *pvParameters)
 
             // ------ Imprimir periódicamente si habilitado ------
             TickType_t now = xTaskGetTickCount();
-            if (print_enabled && (now - last_print_time >= pdMS_TO_TICKS(2000))) {
+            // if (print_enabled && (now - last_print_time >= pdMS_TO_TICKS(1000))) {
+            if (now - last_print_time >= pdMS_TO_TICKS(1000))
+            {
                 ESP_LOGI(TAG, "ADC Raw=%d  Voltage=%d mV  Temp=%.2f °C",
                          adc_raw[0][0], voltage[0][0], tempC);
                 last_print_time = now;
@@ -182,6 +185,9 @@ void oneshot_read_task(void *pvParameters)
         example_adc_calibration_deinit(adc1_cali_chan0_handle);
     }
 }
+/*---------------------------------------------------------------
+        TAREA TEMP → ajusta color LED RGB   
+---------------------------------------------------------------*/
 
 void led_rgb_temp_task(void *pvParameters)
 {
@@ -233,8 +239,15 @@ void led_rgb_temp_task(void *pvParameters)
             brightness = new_brightness;
 
         // Esperar nueva temperatura
-        if (xQueueReceive(sys->temp_queue, &temp, pdMS_TO_TICKS(1000)) == pdTRUE)
+        // if (xQueueReceive(sys->temp_queue, &temp, pdMS_TO_TICKS(1000)) == pdTRUE)
+        // {
+        float new_temp = 0.0f;
+        BaseType_t temp_received = xQueueReceive(sys->temp_queue, &new_temp, pdMS_TO_TICKS(1500));
+
+        if (temp_received == pdTRUE)
         {
+            temp = new_temp;  // actualizar solo si hay nuevo dato
+
             rgb_color_t chosen = {0, 0, 0};
 
             if (current_mode == LED_MODE_AUTO && ranges_received)
@@ -290,10 +303,18 @@ void led_rgb_temp_task(void *pvParameters)
                 xSemaphoreGive(sys->led_mutex);
             }
 
-            ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
-                     temp,
-                     current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
-                     r, g, b, brightness);
+            // ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
+            //          temp,
+            //          current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
+            //          r, g, b, brightness);
+            bool print_enabled = true;
+            xQueuePeek(sys->print_enable_queue, &print_enabled, 0);
+            if (print_enabled) {
+                ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
+                        temp,
+                        current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
+                        r, g, b, brightness);
+            }
         }
     }
 }
