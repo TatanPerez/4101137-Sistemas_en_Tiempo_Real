@@ -18,6 +18,9 @@
 
 const static char *TAG = "EXAMPLE_NTC";
 
+// ✅ ADC compartido (declarado en oneshot_read_main.c)
+extern adc_oneshot_unit_handle_t g_adc1_handle;
+
 /*---------------------------------------------------------------
         ADC Calibration
 ---------------------------------------------------------------*/
@@ -82,6 +85,9 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 #endif
 }
 
+/*---------------------------------------------------------------
+        Main ADC task (NTC + botón)
+---------------------------------------------------------------*/
 
 void oneshot_read_task(void *pvParameters)
 {
@@ -91,19 +97,12 @@ void oneshot_read_task(void *pvParameters)
     static int adc_raw[2][10];
     static int voltage[2][10];
 
-    //-------------ADC1 Init---------------//
-    adc_oneshot_unit_handle_t adc1_handle;
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-
     //-------------ADC1 Config---------------//
     adc_oneshot_chan_cfg_t config = {
         .atten = EXAMPLE_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(g_adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
     // ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN1, &config));
 
     //-------------ADC1 Calibration Init---------------//
@@ -158,7 +157,7 @@ void oneshot_read_task(void *pvParameters)
         }
         last_btn_state = current_btn_state;
 
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
+        ESP_ERROR_CHECK(adc_oneshot_read(g_adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
 
         if (do_calibration1_chan0) {
@@ -209,7 +208,7 @@ void oneshot_read_task(void *pvParameters)
     }
 
     //Tear Down
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
+    ESP_ERROR_CHECK(adc_oneshot_del_unit(g_adc1_handle));
     if (do_calibration1_chan0) {
         example_adc_calibration_deinit(adc1_cali_chan0_handle);
     }

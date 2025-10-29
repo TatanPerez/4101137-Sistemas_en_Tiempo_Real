@@ -18,6 +18,8 @@
 static const char *TAG = "LED_RGB_UART";
 static const char *TAG_POT = "LED_RGB_POT";
 
+extern adc_oneshot_unit_handle_t g_adc1_handle;  // ✅ Handle global compartido
+
 // Variables globales para el color base definido por UART
 static uint8_t base_r_percent = 100;
 static uint8_t base_g_percent = 100;
@@ -152,28 +154,21 @@ void led_rgb_uart_task(void *pvParameters) {
     Tarea que lee el valor de un potenciómetro vía ADC y ajusta el brillo del LED RGB en consecuencia
 --------------------------------------------------------------------------------------------------------- 
 */
-void led_rgb_pot_task(void *pvParameters) {
-    // Configuración ADC para ESP32‑C6
-    adc_oneshot_unit_handle_t adc_handle = NULL;
-    adc_oneshot_unit_init_cfg_t init_cfg = {
-        .unit_id = ADC_UNIT,
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
 
+void led_rgb_pot_task(void *pvParameters) {
     adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten = ADC_ATTEN_DB_12,          // Rango 0-3.3V
-        .bitwidth = ADC_BITWIDTH_DEFAULT, // 12 bits aprox.
+        .atten = ADC_ATTEN_DB_12,       // Rango 0-3.3V
+        .bitwidth = ADC_BITWIDTH_DEFAULT,   // 12 bits aprox.
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_CHANNEL, &chan_cfg));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(g_adc1_handle, ADC_CHANNEL, &chan_cfg));
 
     uint8_t last_percent = 0xFF;
     int adc_samples[ADC_AVG_SAMPLES] = {0};
     int sample_index = 0;
 
     while (1) {
-        int raw = 0;
-        esp_err_t ret = adc_oneshot_read(adc_handle, ADC_CHANNEL, &raw);
+        int raw;
+        esp_err_t ret =(adc_oneshot_read(g_adc1_handle, ADC_CHANNEL, &raw));
         if (ret != ESP_OK) {
             ESP_LOGE(TAG_POT, "Error leyendo ADC: %d", ret);
             vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
