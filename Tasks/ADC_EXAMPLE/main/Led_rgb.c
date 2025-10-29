@@ -9,26 +9,23 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
-// #include "string.h"
+#include "system_handles.h"   // Estructura que contiene colas y mutex
+#include <string.h>
 
 #define UART_NUM            UART_NUM_0
 #define UART_BUF_SIZE       128
-#define ADC_AVG_SAMPLES 5   // Número de muestras para promediado ADC
+#define ADC_AVG_SAMPLES     5
 
-static const char *TAG = "LED_RGB_UART";
-static const char *TAG_POT = "LED_RGB_POT";
+static const char *TAG = "LED_RGB";
+static const char *TAG_POT = "LED_POT";
 
-extern adc_oneshot_unit_handle_t g_adc1_handle;  // ✅ Handle global compartido
+// 🔸 ADC compartido (definido en oneshot_read_main.c)
+extern adc_oneshot_unit_handle_t g_adc1_handle;
 
-// Variables globales para el color base definido por UART
-static uint8_t base_r_percent = 100;
-static uint8_t base_g_percent = 100;
-static uint8_t base_b_percent = 100;
+/* =========================================================================================
+                                FUNCIONES LED PWM
+=========================================================================================*/
 
-
-// ================= PWM: LED RGB Ánodo común ===================
-
-// Configura un canal LEDC PWM para el LED RGB
 static void ledc_setup_channel(ledc_channel_t channel, int gpio_num) {
     ledc_channel_config_t ledc_channel = {
         .speed_mode     = LEDC_MODE,
@@ -41,7 +38,7 @@ static void ledc_setup_channel(ledc_channel_t channel, int gpio_num) {
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
-// Inicializa el timer y canales LEDC para el RGB
+
 void led_rgb_init(void) {
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
@@ -56,9 +53,9 @@ void led_rgb_init(void) {
     ledc_setup_channel(GREEN_CHANNEL, GREEN_GPIO);
     ledc_setup_channel(BLUE_CHANNEL, BLUE_GPIO);
 }
-// Ajusta el color y brillo del LED RGB.
+
+// Aplica color en duty PWM (inverso porque es ánodo común)
 void led_rgb_set_color(uint16_t red, uint16_t green, uint16_t blue) {
-    // Ánodo común: inversa la señal PWM (máximo duty = apagado)
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, RED_CHANNEL, LEDC_DUTY_MAX - red));
     ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, RED_CHANNEL));
 
@@ -68,7 +65,8 @@ void led_rgb_set_color(uint16_t red, uint16_t green, uint16_t blue) {
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, BLUE_CHANNEL, LEDC_DUTY_MAX - blue));
     ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, BLUE_CHANNEL));
 }
-// Ajusta color pasando porcentaje 0-100 para cada canal
+
+// Ajusta PWM según porcentaje
 void led_rgb_set_color_percent(uint8_t red_percent, uint8_t green_percent, uint8_t blue_percent) {
     if (red_percent > 100) red_percent = 100;
     if (green_percent > 100) green_percent = 100;
@@ -80,127 +78,157 @@ void led_rgb_set_color_percent(uint8_t red_percent, uint8_t green_percent, uint8
 
     led_rgb_set_color(red, green, blue);
 }
-/*-------------------------------------------------------------------------------------------------------
-    Tarea que lee comandos por UART para ajustar el color del LED RGB
-    Formato comando: Rxx Gyy Bzz (ej: R100 G50 B25)
---------------------------------------------------------------------------------------------------------- */    
+
+/* =========================================================================================
+                        TAREA UART → recibe color base por comandos
+   Formato:  Rxx Gyy Bzz  (xx,yy,zz entre 0 y 100)
+   Formato rangos: Range rMin rMax gMin gMax bMin bMax (enteros)
+
+=========================================================================================*/
 
 void led_rgb_uart_task(void *pvParameters) {
+    system_handles_t *sys = (system_handles_t *)pvParameters;
+    configASSERT(sys != NULL);
+
     uart_config_t uart_config = {
-        .baud_rate = 115200,                    // Velocidad típica de consola
-        .data_bits = UART_DATA_8_BITS,          // Bits de datos
-        .parity    = UART_PARITY_DISABLE,       // Sin paridad
-        .stop_bits = UART_STOP_BITS_1,          // 1 bit de parada
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE   // Sin control de flujo
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
 
-    uart_param_config(UART_NUM, &uart_config);  // Configura parámetros UART
-    uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // Usa pines por defecto
-    uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0);               // Instala driver UART
+    uart_param_config(UART_NUM, &uart_config);
+    uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
 
-    ESP_LOGI(TAG, "Control de LED RGB por UART");
-    ESP_LOGI(TAG, "Formato: Rxx Gyy Bzz (ej: R100 G50 B25)");
-    ESP_LOGI(TAG, "Ingrese comando:");
+    ESP_LOGI(TAG, "Control de LED RGB por UART (Color: Rxx Gxx Bxx, Rangos: Range rMin rMax gMin gMax bMin bMax)");
 
-    uint8_t data[1];                    // Buffer para leer un byte a la vez
-    char input_line[UART_BUF_SIZE];     // Buffer para la línea de entrada
-    int idx = 0;                        // Índice en el buffer de entrada
+    uint8_t data[1];
+    char input_line[UART_BUF_SIZE];
+    int idx = 0;
 
     while (1) {
         int len = uart_read_bytes(UART_NUM, data, 1, pdMS_TO_TICKS(100));
-
         if (len > 0) {
             char c = (char)data[0];
 
-            if (c == '\r' || c == '\n') {   // Fin de línea
+            // Mostrar tecla recibida
+            if (c >= 32 && c <= 126) {
+                ESP_LOGI(TAG, "Tecla recibida: %c", c);
+            } else if (c == '\r' || c == '\n') {
+                ESP_LOGI(TAG, "Enter presionado");
+            } else {
+                ESP_LOGI(TAG, "Carácter especial recibido: 0x%02X", c);
+            }
+
+            // Procesar línea completa
+            if (c == '\r' || c == '\n') {
                 input_line[idx] = '\0';
+                if (idx > 0) {
+                    // Intentar leer color base
+                    rgb_color_t cmd;
+                    int matched = sscanf(input_line, "R%hhu G%hhu B%hhu",
+                                         &cmd.red_percent, &cmd.green_percent, &cmd.blue_percent);
+                    if (matched == 3) {
+                        // Color base: guardar, pero NO cambiar el modo
+                        xQueueOverwrite(sys->rgb_cmd_queue, &cmd);
+                        ESP_LOGI(TAG, "Color base actualizado → R=%d G=%d B=%d",
+                                cmd.red_percent, cmd.green_percent, cmd.blue_percent);
+                    }
+                    else if (strncasecmp(input_line, "Range", 5) == 0) {
+                        rgb_temp_ranges_t ranges;
+                        int rMin, rMax, gMin, gMax, bMin, bMax;
+                        matched = sscanf(input_line + 5, "%d %d %d %d %d %d",
+                                        &rMin, &rMax, &gMin, &gMax, &bMin, &bMax);
+                        if (matched == 6) {
+                            ranges.red.min = rMin;   ranges.red.max = rMax;
+                            ranges.green.min = gMin; ranges.green.max = gMax;
+                            ranges.blue.min = bMin;  ranges.blue.max = bMax;
 
-                if (idx > 0) {              
-                    int r = -1, g = -1, b = -1;
-                    int matched = sscanf(input_line, "R%d G%d B%d", &r, &g, &b);
+                            xQueueOverwrite(sys->temp_range_queue, &ranges);
 
-                    if (matched == 3 && r >= 0 && r <= 100 && g >= 0 && g <= 100 && b >= 0 && b <= 100) {   // Comando válido
-                        base_r_percent = r;
-                        base_g_percent = g;
-                        base_b_percent = b;
-                        led_rgb_set_color_percent(r, g, b);
-                        ESP_LOGI(TAG, "-> Comando ejecutado: %s", input_line);
-                        ESP_LOGI(TAG, "-> LED ajustado a R:%d%% G:%d%% B:%d%%", r, g, b);
-                    } else {
-                        ESP_LOGI(TAG, "Entrada inválida. Usa: Rxx Gyy Bzz");
+                            // Activar modo AUTO cuando se define un rango
+                            led_mode_t auto_mode = LED_MODE_AUTO;
+                            xQueueOverwrite(sys->led_mode_queue, &auto_mode);
+
+                            ESP_LOGI(TAG, "Modo AUTO → Rangos guardados: R(%d-%d) G(%d-%d) B(%d-%d)",
+                                    rMin, rMax, gMin, gMax, bMin, bMax);
+                        } else {
+                            ESP_LOGW(TAG, "Formato Range inválido. Usa: Range rMin rMax gMin gMax bMin bMax");
+                        }
+                    }
+                    else {
+                        ESP_LOGW(TAG, "Formato inválido. Usa: Rxx Gxx Bxx o Range rMin rMax gMin gMax bMin bMax");
                     }
                 }
                 idx = 0;
-                input_line[0] = '\0';
-                ESP_LOGI(TAG, "Ingrese comando:");
+                memset(input_line, 0, sizeof(input_line));
             }
-            else if (c == '\b' || c == 127) {       // Backspace    
-                if (idx > 0) {
-                    idx--;
-                    input_line[idx] = '\0';
-                    ESP_LOGI(TAG, "Comando actual: %s", input_line);
-                }
-            }
-            else if (c >= 32 && c <= 126 && idx < UART_BUF_SIZE - 1) {  // Caracter imprimible
+            // Acumular caracteres imprimibles
+            else if (c >= 32 && c <= 126 && idx < UART_BUF_SIZE - 1) {
                 input_line[idx++] = c;
-                input_line[idx] = '\0';
-                ESP_LOGI(TAG, "Comando actual: %s", input_line);
             }
         }
     }
 }
 
-/*-------------------------------------------------------------------------------------------------------
-    Tarea que lee el valor de un potenciómetro vía ADC y ajusta el brillo del LED RGB en consecuencia
---------------------------------------------------------------------------------------------------------- 
-*/
+/* =========================================================================================
+                        TAREA POTENCIÓMETRO → ajusta brillo
+=========================================================================================*/
 
-void led_rgb_pot_task(void *pvParameters) {
+void led_rgb_pot_task(void *pvParameters)
+{
+    system_handles_t *sys = (system_handles_t *)pvParameters;
+    configASSERT(sys != NULL);
+
     adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten = ADC_ATTEN_DB_12,       // Rango 0-3.3V
-        .bitwidth = ADC_BITWIDTH_DEFAULT,   // 12 bits aprox.
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(g_adc1_handle, ADC_CHANNEL, &chan_cfg));
 
-    uint8_t last_percent = 0xFF;
     int adc_samples[ADC_AVG_SAMPLES] = {0};
     int sample_index = 0;
+    uint8_t last_brightness = 0xFF;
 
-    while (1) {
+    ESP_LOGI(TAG_POT, "Tarea del potenciómetro iniciada (solo control de brillo)");
+
+    while (1)
+    {
+        // Leer ADC del potenciómetro
         int raw;
-        esp_err_t ret =(adc_oneshot_read(g_adc1_handle, ADC_CHANNEL, &raw));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG_POT, "Error leyendo ADC: %d", ret);
-            vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
+        if (adc_oneshot_read(g_adc1_handle, ADC_CHANNEL, &raw) != ESP_OK)
+        {
+            vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
+
+        // Promediar muestras
         adc_samples[sample_index++] = raw;
-        if (sample_index >= ADC_AVG_SAMPLES) sample_index = 0;
+        if (sample_index >= ADC_AVG_SAMPLES)
+            sample_index = 0;
 
         int sum = 0;
-        for (int i = 0; i < ADC_AVG_SAMPLES; i++) {
+        for (int i = 0; i < ADC_AVG_SAMPLES; i++)
             sum += adc_samples[i];
-        }
         int avg_raw = sum / ADC_AVG_SAMPLES;
+        if (avg_raw > 4095)
+            avg_raw = 4095;
 
-        // Limitar valor raw para evitar overflow y pasar a porcentaje
-        if (avg_raw > 4095) avg_raw = 4095;
+        // Convertir a porcentaje 0–100
+        uint8_t brightness = (avg_raw * 100) / 4095;
 
-        uint8_t percent = (avg_raw * 100) / 4095;
+        // Solo actualizar si hay un cambio significativo
+        if (brightness != last_brightness)
+        {
+            xQueueOverwrite(sys->brightness_queue, &brightness);
+            last_brightness = brightness;
 
-        if (percent != last_percent) {
-            // Aplica brillo multiplicando por base de color
-            uint8_t r = (base_r_percent * percent) / 100;
-            uint8_t g = (base_g_percent * percent) / 100;
-            uint8_t b = (base_b_percent * percent) / 100;
-
-            led_rgb_set_color_percent(r, g, b);
-
-            ESP_LOGI(TAG_POT, "Potenciómetro: raw=%d, brillo=%d%% → R=%d G=%d B=%d (base R=%d G=%d B=%d)", 
-                     avg_raw, percent, r, g, b, base_r_percent, base_g_percent, base_b_percent);
-
-            last_percent = percent;
+            ESP_LOGI(TAG_POT, "Brillo actualizado: %d%%", brightness);
         }
+
+        // No se controla el LED aquí — lo hace led_rgb_temp_task()
         vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
     }
 }

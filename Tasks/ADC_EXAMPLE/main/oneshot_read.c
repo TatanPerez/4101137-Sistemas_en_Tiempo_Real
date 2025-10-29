@@ -10,19 +10,22 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/gpio.h"
+
 #include "oneshot_read.h"
+#include "led_rgb.h"
+#include "system_handles.h"   // <- incluye las colas y el mutex compartido
 
 #ifndef NAN
 #define NAN (0.0/0.0)
 #endif
 
-const static char *TAG = "EXAMPLE_NTC";
-
-// ✅ ADC compartido (declarado en oneshot_read_main.c)
+static const char *TAG = "EXAMPLE_NTC";
+static const char *TAG_TEMP = "LED_RGB_TEMP";
+// ✅ ADC compartido (definido en oneshot_read_main.c)
 extern adc_oneshot_unit_handle_t g_adc1_handle;
 
 /*---------------------------------------------------------------
-        ADC Calibration
+        ADC Calibration helpers
 ---------------------------------------------------------------*/
 bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
 {
@@ -40,9 +43,7 @@ bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_at
             .bitwidth = ADC_BITWIDTH_DEFAULT,
         };
         ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
+        if (ret == ESP_OK) calibrated = true;
     }
 #endif
 
@@ -55,9 +56,7 @@ bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_at
             .bitwidth = ADC_BITWIDTH_DEFAULT,
         };
         ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
+        if (ret == ESP_OK) calibrated = true;
     }
 #endif
 
@@ -78,7 +77,6 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
     ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
-
 #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
     ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
     ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
@@ -86,56 +84,38 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 }
 
 /*---------------------------------------------------------------
-        Main ADC task (NTC + botón)
+        Main ADC Task (NTC + botón)
 ---------------------------------------------------------------*/
 
 void oneshot_read_task(void *pvParameters)
 {
-
-    // adc_task_config_t *cfg = (adc_task_config_t *) pvParameters;
+    // Recibir estructura con colas y mutex
+    system_handles_t *sys = (system_handles_t *)pvParameters;
+    configASSERT(sys != NULL);
 
     static int adc_raw[2][10];
     static int voltage[2][10];
 
-    //-------------ADC1 Config---------------//
+    //------------- ADC1 Config ---------------//
     adc_oneshot_chan_cfg_t config = {
         .atten = EXAMPLE_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(g_adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
-    // ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN1, &config));
 
-    //-------------ADC1 Calibration Init---------------//
+    //------------- ADC1 Calibration Init ---------------//
     adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-    // adc_cali_handle_t adc1_cali_chan1_handle = NULL;
-    bool do_calibration1_chan0 = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
-    // bool do_calibration1_chan1 = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC1_CHAN1, EXAMPLE_ADC_ATTEN, &adc1_cali_chan1_handle);
+    bool do_calibration1_chan0 = example_adc_calibration_init(
+        ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
 
-#if EXAMPLE_USE_ADC2
-    //-------------ADC2 Init---------------//
-    adc_oneshot_unit_handle_t adc2_handle;
-    adc_oneshot_unit_init_cfg_t init_config2 = {
-        .unit_id = ADC_UNIT_2,
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config2, &adc2_handle));
+    //------------- Parámetros NTC ---------------//
+    const double V_in = 3.3;      // Voltaje de referencia
+    const double R_fixed = 10000.0;  // Resistencia fija de 10kΩ
+    const double R0 = 10000.0;       // NTC 10kΩ @ 25°C
+    const double B = 3950.0;         // Constante Beta
+    const double T0 = 298.15;        // 25°C en Kelvin
 
-        //-------------ADC2 Calibration Init---------------//
-    adc_cali_handle_t adc2_cali_handle = NULL;
-    bool do_calibration2 = example_adc_calibration_init(ADC_UNIT_2, EXAMPLE_ADC2_CHAN0, EXAMPLE_ADC_ATTEN, &adc2_cali_handle);
-
-    //-------------ADC2 Config---------------//
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_ADC2_CHAN0, &config));
-#endif  //#if EXAMPLE_USE_ADC2
-
-    //-------------ADC Read---------------//
-    const double V_in = 3.3;        // Voltaje del pin 3V3 de la ESP32-C6
-    const double R_fixed = 10000.0;       // Resistencia fija 10 kΩ
-    const double R0 = 10000.0;         // NTC 10D-20: 10 kΩ a 25 °C
-    const double B = 3950.0;        // Valor real típico para NTC MF52AT 10k ohm
-    const double T0 = 298.15;       // 25 °C en Kelvin
-
-    // Configurar GPIO del botón como entrada con pull-up
+    //------------- Configurar botón ---------------//
     gpio_config_t btn_config = {
         .pin_bit_mask = (1ULL << BUTTON_GPIO),
         .mode = GPIO_MODE_INPUT,
@@ -144,29 +124,28 @@ void oneshot_read_task(void *pvParameters)
         .intr_type = GPIO_INTR_DISABLE
     };
     ESP_ERROR_CHECK(gpio_config(&btn_config));
-    bool print_enabled = true; // Se inicia con impresión habilitada
-    int last_btn_state = 1;  // Estado inicial del botón (asumiendo que no está presionado)
-    TickType_t last_print_time = 0;  // Para controlar la frecuencia de impresión
+
+    bool print_enabled = true; // toggleado por botón
+    int last_btn_state = 1;
+    TickType_t last_print_time = 0;
 
     while (1) {
+        // ------ Leer botón y alternar impresión ------
         int current_btn_state = gpio_get_level(BUTTON_GPIO);
-        // if (current_btn_state != last_btn_state) {
-        if (last_btn_state == 1 && current_btn_state == 0) { // Detecta flanco de bajada
+        if (last_btn_state == 1 && current_btn_state == 0) { // flanco de bajada
             print_enabled = !print_enabled;
             ESP_LOGI(TAG, "Print %s", print_enabled ? "ENABLED" : "DISABLED");
         }
         last_btn_state = current_btn_state;
 
+        // ------ Leer ADC ------
         ESP_ERROR_CHECK(adc_oneshot_read(g_adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
 
         if (do_calibration1_chan0) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, voltage[0][0]);
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle,
+                                                    adc_raw[0][0], &voltage[0][0]));
 
-            double V_out = voltage[0][0] / 1000.0; // Convertir mV a V  
-            ESP_LOGI(TAG, "Voltage: %.3f V", V_out);
-
+            double V_out = voltage[0][0] / 1000.0; // mV → V
             double R_ntc = NAN;
             if (V_out > 0 && V_out < V_in) {
                 R_ntc = R_fixed * (V_out / (V_in - V_out));
@@ -178,47 +157,143 @@ void oneshot_read_task(void *pvParameters)
                 tempC = tempK - 273.15;
             }
 
-            ESP_LOGI(TAG, "R_NTC: %.2f Ω", R_ntc);
+            // ------ Enviar temperatura a la cola ------
+            if (!isnan(tempC)) {
+                float tempF = (float)tempC;
+                // Mantiene solo el último valor (no bloquea si llena)
+                xQueueOverwrite(sys->temp_queue, &tempF);
+            }
+
+            // ------ Imprimir periódicamente si habilitado ------
             TickType_t now = xTaskGetTickCount();
             if (print_enabled && (now - last_print_time >= pdMS_TO_TICKS(2000))) {
-                ESP_LOGI(TAG, "Temp: %.2f °C", tempC);
+                ESP_LOGI(TAG, "ADC Raw=%d  Voltage=%d mV  Temp=%.2f °C",
+                         adc_raw[0][0], voltage[0][0], tempC);
                 last_print_time = now;
             }
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
-
-        // ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN1, &adc_raw[0][1]));
-        // ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN1, adc_raw[0][1]);
-        // if (do_calibration1_chan1) {
-        //     ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan1_handle, adc_raw[0][1], &voltage[0][1]));
-        //     ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN1, voltage[0][1]);
-        // }
-        // vTaskDelay(pdMS_TO_TICKS(1000));
-
-#if EXAMPLE_USE_ADC2
-        ESP_ERROR_CHECK(adc_oneshot_read(adc2_handle, EXAMPLE_ADC2_CHAN0, &adc_raw[1][0]));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_2 + 1, EXAMPLE_ADC2_CHAN0, adc_raw[1][0]);
-        if (do_calibration2) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc2_cali_handle, adc_raw[1][0], &voltage[1][0]));
-            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_2 + 1, EXAMPLE_ADC2_CHAN0, voltage[1][0]);
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-#endif  //#if EXAMPLE_USE_ADC2
     }
 
-    //Tear Down
+    // Nunca llega aquí (tarea infinita)
     ESP_ERROR_CHECK(adc_oneshot_del_unit(g_adc1_handle));
     if (do_calibration1_chan0) {
         example_adc_calibration_deinit(adc1_cali_chan0_handle);
     }
-    // if (do_calibration1_chan1) {
-    //     example_adc_calibration_deinit(adc1_cali_chan1_handle);
-    // }
-#if EXAMPLE_USE_ADC2
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc2_handle));
-    if (do_calibration2) {
-        example_adc_calibration_deinit(adc2_cali_handle);
+}
+
+void led_rgb_temp_task(void *pvParameters)
+{
+    system_handles_t *sys = (system_handles_t *)pvParameters;
+    configASSERT(sys != NULL);
+
+    rgb_color_t base_color = {0, 0, 0};
+    bool base_received = false;
+
+    rgb_temp_ranges_t ranges = {0};
+    bool ranges_received = false;
+
+    led_mode_t current_mode = LED_MODE_MANUAL;
+    uint8_t brightness = 100;
+    float temp = 0.0f;
+
+    ESP_LOGI(TAG_TEMP, "Tarea de control de LED RGB según temperatura iniciada");
+
+    for (;;)
+    {
+        // Actualizar color base si llega uno nuevo
+        rgb_color_t new_base;
+        if (xQueueReceive(sys->rgb_cmd_queue, &new_base, 0) == pdTRUE)
+        {
+            base_color = new_base;
+            base_received = true;
+        }
+
+        // Actualizar rangos si llegan nuevos por UART
+        rgb_temp_ranges_t new_ranges;
+        if (xQueueReceive(sys->temp_range_queue, &new_ranges, 0) == pdTRUE)
+        {
+            ranges = new_ranges;
+            ranges_received = true;
+            ESP_LOGI(TAG_TEMP, "Nuevos rangos guardados: R(%.1f-%.1f) G(%.1f-%.1f) B(%.1f-%.1f)",
+                     ranges.red.min, ranges.red.max,
+                     ranges.green.min, ranges.green.max,
+                     ranges.blue.min, ranges.blue.max);
+        }
+
+        // Leer modo actual (manual o automático)
+        led_mode_t new_mode;
+        if (xQueueReceive(sys->led_mode_queue, &new_mode, 0) == pdTRUE)
+            current_mode = new_mode;
+
+        // Actualizar brillo
+        uint8_t new_brightness;
+        if (xQueueReceive(sys->brightness_queue, &new_brightness, 0) == pdTRUE)
+            brightness = new_brightness;
+
+        // Esperar nueva temperatura
+        if (xQueueReceive(sys->temp_queue, &temp, pdMS_TO_TICKS(1000)) == pdTRUE)
+        {
+            rgb_color_t chosen = {0, 0, 0};
+
+            if (current_mode == LED_MODE_AUTO && ranges_received)
+            {
+                bool in_range = false;
+
+                if (temp >= ranges.red.min && temp <= ranges.red.max)
+                {
+                    chosen = (rgb_color_t){100, 0, 0};
+                    in_range = true;
+                }
+                else if (temp >= ranges.green.min && temp <= ranges.green.max)
+                {
+                    chosen = (rgb_color_t){0, 100, 0};
+                    in_range = true;
+                }
+                else if (temp >= ranges.blue.min && temp <= ranges.blue.max)
+                {
+                    chosen = (rgb_color_t){0, 0, 100};
+                    in_range = true;
+                }
+
+                // Fuera de todos los rangos → usar color base definido por UART
+                if (!in_range)
+                {
+                    if (base_received)
+                    {
+                        chosen = base_color;
+                        ESP_LOGI(TAG_TEMP, "Temp %.2f°C fuera de rangos → usando color base R=%d G=%d B=%d",
+                                temp, base_color.red_percent, base_color.green_percent, base_color.blue_percent);
+                    }
+                    else
+                    {
+                        // No hay color base, mantener LED apagado
+                        chosen = (rgb_color_t){0, 0, 0};
+                        ESP_LOGI(TAG_TEMP, "Temp %.2f°C fuera de rangos y sin color base definido → LED apagado", temp);
+                    }
+                }
+            }
+            else if (current_mode == LED_MODE_MANUAL && base_received)
+            {
+                chosen = base_color;
+            }
+
+            // Aplicar brillo actual
+            uint8_t r = (chosen.red_percent * brightness) / 100;
+            uint8_t g = (chosen.green_percent * brightness) / 100;
+            uint8_t b = (chosen.blue_percent * brightness) / 100;
+
+            if (xSemaphoreTake(sys->led_mutex, pdMS_TO_TICKS(200)) == pdTRUE)
+            {
+                led_rgb_set_color_percent(r, g, b);
+                xSemaphoreGive(sys->led_mutex);
+            }
+
+            ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
+                     temp,
+                     current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
+                     r, g, b, brightness);
+        }
     }
-#endif  //#if EXAMPLE_USE_ADC2
 }

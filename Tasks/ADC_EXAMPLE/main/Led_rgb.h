@@ -45,6 +45,9 @@ void led_rgb_uart_task(void *pvParameters);
 // Crea una tarea que lee el valor de un potenciómetro vía ADC y ajusta el brillo del LED RGB
 void led_rgb_pot_task(void *pvParameters);
 
+// Crea una tarea que ajusta el color del LED RGB según la temperatura recibida por cola
+void led_rgb_temp_task(void *pvParameters);
+
 
 #ifdef __cplusplus
 }

@@ -3,38 +3,36 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "soc/soc_caps.h"
-#include "esp_log.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include <math.h>
-#include "driver/gpio.h"
-#include "oneshot_read.h"
+#include "system_handles.h"
 #include "led_rgb.h"
-#include "esp_adc/adc_oneshot.h"
+#include "oneshot_read.h"
 
-// #include "adc_shared.h"
-
-// Handle ADC global compartido entre tareas
-adc_oneshot_unit_handle_t g_adc1_handle;
+// (mantén tu g_adc1_handle como ahora en este file o en adc_shared.h)
+adc_oneshot_unit_handle_t g_adc1_handle;   // como ahora
 
 void app_main(void)
 {
-        // --- Inicializar ADC ---
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
+    // Inicializar ADC (como ya lo haces)
+    adc_oneshot_unit_init_cfg_t init_config1 = { .unit_id = ADC_UNIT_1, };
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &g_adc1_handle));
 
-    // Inicializamos el módulo RGB
+    // Inicializar LED HW
     led_rgb_init();
-    xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, NULL, 5, NULL);  // Inicia UART
-    xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 2048, NULL, 5, NULL);
-    xTaskCreate(oneshot_read_task, "oneshot_task", 8192, NULL, 5, NULL);
+
+    // Crear colas y mutex
+    static system_handles_t sys; // estático en RAM
+    sys.rgb_cmd_queue    = xQueueCreate(1, sizeof(rgb_color_t));
+    sys.brightness_queue = xQueueCreate(1, sizeof(uint8_t)); // solo el último valor importa
+    sys.temp_queue       = xQueueCreate(1, sizeof(float));   // solo el último valor importa
+    sys.temp_range_queue = xQueueCreate(1, sizeof(rgb_temp_ranges_t)); // solo el último valor importa
+    sys.led_mode_queue   = xQueueCreate(1, sizeof(led_mode_t));  // solo el último valor importa
+    sys.led_mutex        = xSemaphoreCreateMutex();
+
+    configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex);
+
+    // Crear tareas PASANDO &sys como pvParameters
+    xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, &sys, 5, NULL);
+    xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 4096, &sys, 5, NULL);
+    xTaskCreate(oneshot_read_task, "oneshot_task", 8192, &sys, 5, NULL);
+    xTaskCreate(led_rgb_temp_task, "led_rgb_temp_task", 4096, &sys, 5, NULL);
 }
