@@ -38,6 +38,9 @@ typedef struct {
     QueueHandle_t led_mode_queue;      // cola para led_mode_t
     QueueHandle_t print_enable_queue;  // cola para bool (habilitar impresión)
     SemaphoreHandle_t led_mutex;       // mutex para proteger acceso al LED
+    QueueHandle_t led_power_queue;      // bool: LED ON/OFF (botón)
+    QueueHandle_t temp_print_interval_queue; // uint32_t: intervalo ms para imprimir temp
+    QueueHandle_t pot_print_enable_queue; // bool: activar impresión voltaje del potenciómetro
 } system_handles_t;
 
 #endif // SYSTEM_HANDLES_H

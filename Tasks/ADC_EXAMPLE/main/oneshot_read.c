@@ -89,7 +89,6 @@ void example_adc_calibration_deinit(adc_cali_handle_t handle)
 
 void oneshot_read_task(void *pvParameters)
 {
-    // Recibir estructura con colas y mutex
     system_handles_t *sys = (system_handles_t *)pvParameters;
     configASSERT(sys != NULL);
 
@@ -109,11 +108,11 @@ void oneshot_read_task(void *pvParameters)
         ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
 
     //------------- Parámetros NTC ---------------//
-    const double V_in = 3.3;      // Voltaje de referencia
-    const double R_fixed = 10000.0;  // Resistencia fija de 10kΩ
-    const double R0 = 10000.0;       // NTC 10kΩ @ 25°C
-    const double B = 3950.0;         // Constante Beta
-    const double T0 = 298.15;        // 25°C en Kelvin
+    const double V_in = 3.3;        // Voltaje de referencia
+    const double R_fixed = 10000.0; // Resistencia fija de 10kΩ
+    const double R0 = 10000.0;      // NTC 10kΩ @ 25°C
+    const double B = 3950.0;        // Constante Beta
+    const double T0 = 298.15;       // 25°C en Kelvin
 
     //------------- Configurar botón ---------------//
     gpio_config_t btn_config = {
@@ -125,17 +124,17 @@ void oneshot_read_task(void *pvParameters)
     };
     ESP_ERROR_CHECK(gpio_config(&btn_config));
 
-    bool print_enabled = true; // toggleado por botón
+    bool led_power = true;   
     int last_btn_state = 1;
     TickType_t last_print_time = 0;
 
     while (1) {
-        // ------ Leer botón y alternar impresión ------
+        // ------ Leer botón y alternar LED POWER ------
         int current_btn_state = gpio_get_level(BUTTON_GPIO);
         if (last_btn_state == 1 && current_btn_state == 0) { // flanco de bajada
-            print_enabled = !print_enabled;
-            xQueueOverwrite(sys->print_enable_queue, &print_enabled);
-            ESP_LOGI(TAG, "Print %s", print_enabled ? "ENABLED" : "DISABLED");
+            led_power = !led_power;
+            xQueueOverwrite(sys->led_power_queue, &led_power);
+            ESP_LOGI(TAG, "LED Power %s", led_power ? "ON" : "OFF");
         }
         last_btn_state = current_btn_state;
 
@@ -161,25 +160,26 @@ void oneshot_read_task(void *pvParameters)
             // ------ Enviar temperatura a la cola ------
             if (!isnan(tempC)) {
                 float tempF = (float)tempC;
-                // Mantiene solo el último valor (no bloquea si llena)
                 xQueueOverwrite(sys->temp_queue, &tempF);
             }
 
-            // ------ Imprimir periódicamente si habilitado ------
+            // ------ Leer intervalo actual de impresión ------
+            uint32_t print_interval_ms = 1000; // valor por defecto
+            xQueuePeek(sys->temp_print_interval_queue, &print_interval_ms, 0);
+
+            // ------ Imprimir según intervalo dinámico ------
             TickType_t now = xTaskGetTickCount();
-            // if (print_enabled && (now - last_print_time >= pdMS_TO_TICKS(1000))) {
-            if (now - last_print_time >= pdMS_TO_TICKS(1000))
-            {
-                ESP_LOGI(TAG, "ADC Raw=%d  Voltage=%d mV  Temp=%.2f °C",
-                         adc_raw[0][0], voltage[0][0], tempC);
+            if ((now - last_print_time) >= pdMS_TO_TICKS(print_interval_ms)) {
+                // ESP_LOGI(TAG, "ADC Raw=%d  Voltage=%d mV  Temp=%.2f °C (intervalo=%lu ms)",
+                //          adc_raw[0][0], voltage[0][0], tempC, print_interval_ms);
                 last_print_time = now;
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(10)); // ciclo fluido
     }
 
-    // Nunca llega aquí (tarea infinita)
+    // Nunca llega aquí
     ESP_ERROR_CHECK(adc_oneshot_del_unit(g_adc1_handle));
     if (do_calibration1_chan0) {
         example_adc_calibration_deinit(adc1_cali_chan0_handle);
@@ -206,115 +206,87 @@ void led_rgb_temp_task(void *pvParameters)
 
     ESP_LOGI(TAG_TEMP, "Tarea de control de LED RGB según temperatura iniciada");
 
+    TickType_t last_print_time = 0; // <-- Agregar al inicio de la función, antes del for(;;)
+
     for (;;)
     {
-        // Actualizar color base si llega uno nuevo
+        // 1️⃣ Leer intervalo actual desde la cola SETT
+        uint32_t print_interval_ms = 1000; // valor por defecto
+        xQueuePeek(sys->temp_print_interval_queue, &print_interval_ms, 0);
+
+        // 2️⃣ Recibir actualizaciones (modo, brillo, rangos, base) normalmente
         rgb_color_t new_base;
-        if (xQueueReceive(sys->rgb_cmd_queue, &new_base, 0) == pdTRUE)
-        {
+        if (xQueueReceive(sys->rgb_cmd_queue, &new_base, 0) == pdTRUE) {
             base_color = new_base;
             base_received = true;
         }
 
-        // Actualizar rangos si llegan nuevos por UART
         rgb_temp_ranges_t new_ranges;
-        if (xQueueReceive(sys->temp_range_queue, &new_ranges, 0) == pdTRUE)
-        {
+        if (xQueueReceive(sys->temp_range_queue, &new_ranges, 0) == pdTRUE) {
             ranges = new_ranges;
             ranges_received = true;
-            ESP_LOGI(TAG_TEMP, "Nuevos rangos guardados: R(%.1f-%.1f) G(%.1f-%.1f) B(%.1f-%.1f)",
-                     ranges.red.min, ranges.red.max,
-                     ranges.green.min, ranges.green.max,
-                     ranges.blue.min, ranges.blue.max);
         }
 
-        // Leer modo actual (manual o automático)
         led_mode_t new_mode;
         if (xQueueReceive(sys->led_mode_queue, &new_mode, 0) == pdTRUE)
             current_mode = new_mode;
 
-        // Actualizar brillo
         uint8_t new_brightness;
         if (xQueueReceive(sys->brightness_queue, &new_brightness, 0) == pdTRUE)
             brightness = new_brightness;
 
-        // Esperar nueva temperatura
-        // if (xQueueReceive(sys->temp_queue, &temp, pdMS_TO_TICKS(1000)) == pdTRUE)
-        // {
-        float new_temp = 0.0f;
-        BaseType_t temp_received = xQueueReceive(sys->temp_queue, &new_temp, pdMS_TO_TICKS(1500));
+        // 3️⃣ Recibir temperatura de manera no bloqueante
+        float new_temp;
+        if (xQueueReceive(sys->temp_queue, &new_temp, 0) == pdTRUE) {
+            temp = new_temp;
+        }
 
-        if (temp_received == pdTRUE)
-        {
-            temp = new_temp;  // actualizar solo si hay nuevo dato
+        // 4️⃣ Control de intervalo de impresión dinámico (SETT manda aquí)
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_print_time) >= pdMS_TO_TICKS(print_interval_ms)) {
+            last_print_time = now;
 
+            // ---------- Lógica existente de control RGB ----------
             rgb_color_t chosen = {0, 0, 0};
-
-            if (current_mode == LED_MODE_AUTO && ranges_received)
-            {
-                bool in_range = false;
-
+            if (current_mode == LED_MODE_AUTO && ranges_received) {
                 if (temp >= ranges.red.min && temp <= ranges.red.max)
-                {
                     chosen = (rgb_color_t){100, 0, 0};
-                    in_range = true;
-                }
                 else if (temp >= ranges.green.min && temp <= ranges.green.max)
-                {
                     chosen = (rgb_color_t){0, 100, 0};
-                    in_range = true;
-                }
                 else if (temp >= ranges.blue.min && temp <= ranges.blue.max)
-                {
                     chosen = (rgb_color_t){0, 0, 100};
-                    in_range = true;
-                }
-
-                // Fuera de todos los rangos → usar color base definido por UART
-                if (!in_range)
-                {
-                    if (base_received)
-                    {
-                        chosen = base_color;
-                        ESP_LOGI(TAG_TEMP, "Temp %.2f°C fuera de rangos → usando color base R=%d G=%d B=%d",
-                                temp, base_color.red_percent, base_color.green_percent, base_color.blue_percent);
-                    }
-                    else
-                    {
-                        // No hay color base, mantener LED apagado
-                        chosen = (rgb_color_t){0, 0, 0};
-                        ESP_LOGI(TAG_TEMP, "Temp %.2f°C fuera de rangos y sin color base definido → LED apagado", temp);
-                    }
-                }
-            }
-            else if (current_mode == LED_MODE_MANUAL && base_received)
-            {
+                else if (base_received)
+                    chosen = base_color;
+            } else if (current_mode == LED_MODE_MANUAL && base_received) {
                 chosen = base_color;
             }
 
-            // Aplicar brillo actual
             uint8_t r = (chosen.red_percent * brightness) / 100;
             uint8_t g = (chosen.green_percent * brightness) / 100;
             uint8_t b = (chosen.blue_percent * brightness) / 100;
 
-            if (xSemaphoreTake(sys->led_mutex, pdMS_TO_TICKS(200)) == pdTRUE)
-            {
+            bool led_on = true;
+            xQueuePeek(sys->led_power_queue, &led_on, 0);
+            if (!led_on) { r = g = b = 0; }
+
+            if (xSemaphoreTake(sys->led_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
                 led_rgb_set_color_percent(r, g, b);
                 xSemaphoreGive(sys->led_mutex);
             }
 
-            // ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
-            //          temp,
-            //          current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
-            //          r, g, b, brightness);
             bool print_enabled = true;
             xQueuePeek(sys->print_enable_queue, &print_enabled, 0);
             if (print_enabled) {
-                ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%)",
+                ESP_LOGI(TAG_TEMP, "Temp=%.2f°C | Modo=%s | LED→R=%d G=%d B=%d (Brillo=%d%%) | Power=%s | Intervalo=%lu ms",
                         temp,
                         current_mode == LED_MODE_AUTO ? "AUTO" : "MANUAL",
-                        r, g, b, brightness);
+                        r, g, b, brightness,
+                        led_on ? "ON" : "OFF",
+                        print_interval_ms);
             }
         }
+
+        // 5️⃣ Ciclo rápido sin bloquear
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

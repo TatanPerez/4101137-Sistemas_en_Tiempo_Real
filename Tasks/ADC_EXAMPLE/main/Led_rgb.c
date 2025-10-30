@@ -19,7 +19,7 @@
 static const char *TAG = "LED_RGB";
 static const char *TAG_POT = "LED_POT";
 
-// 🔸 ADC compartido (definido en oneshot_read_main.c)
+// ADC compartido (definido en oneshot_read_main.c)
 extern adc_oneshot_unit_handle_t g_adc1_handle;
 
 /* =========================================================================================
@@ -136,6 +136,8 @@ void led_rgb_uart_task(void *pvParameters) {
                         ESP_LOGI(TAG, "Color base actualizado → R=%d G=%d B=%d",
                                 cmd.red_percent, cmd.green_percent, cmd.blue_percent);
                     }
+
+                    // --- Nuevo comando: definir rangos de temperatura ---
                     else if (strncasecmp(input_line, "Range", 5) == 0) {
                         rgb_temp_ranges_t ranges;
                         int rMin, rMax, gMin, gMax, bMin, bMax;
@@ -158,10 +160,39 @@ void led_rgb_uart_task(void *pvParameters) {
                             ESP_LOGW(TAG, "Formato Range inválido. Usa: Range rMin rMax gMin gMax bMin bMax");
                         }
                     }
+
+                    // Nuevo comando: SETT <ms> (intervalo de impresión de temperatura) ---
+                    else if (strncasecmp(input_line, "SETT", 4) == 0) {
+                        uint32_t ms = 0;
+                        if (sscanf(input_line + 4, "%lu", &ms) == 1 && ms > 0) {
+                            xQueueOverwrite(sys->temp_print_interval_queue, &ms);
+                            ESP_LOGI(TAG, "Intervalo impresión temp establecido a %u ms", ms);
+                        } else {
+                            ESP_LOGW(TAG, "Formato SETT inválido. Usa: SETT <ms>");
+                        }
+                    }
+
+                    // Nuevo comando: PREAD (activar impresión del potenciómetro) ---
+                    else if (strcasecmp(input_line, "PREAD") == 0) {
+                        bool on = true;
+                        xQueueOverwrite(sys->pot_print_enable_queue, &on);
+                        ESP_LOGI(TAG, "Impresión voltaje pot ENABLED");
+                    }
+
+                    // Nuevo comando: PSTOP (desactivar impresión del potenciómetro) ---
+                    else if (strcasecmp(input_line, "PSTOP") == 0) {
+                        bool off = false;
+                        xQueueOverwrite(sys->pot_print_enable_queue, &off);
+                        ESP_LOGI(TAG, "Impresión voltaje pot DISABLED");
+                    }
+
+                    // --- Cualquier otro comando no reconocido ---
                     else {
-                        ESP_LOGW(TAG, "Formato inválido. Usa: Rxx Gxx Bxx o Range rMin rMax gMin gMax bMin bMax");
+                        ESP_LOGW(TAG, "Formato inválido. Usa: Rxx Gxx Bxx, Range ..., SETT <ms>, PREAD o PSTOP");
                     }
                 }
+
+                // Reiniciar buffer
                 idx = 0;
                 memset(input_line, 0, sizeof(input_line));
             }
@@ -172,6 +203,7 @@ void led_rgb_uart_task(void *pvParameters) {
         }
     }
 }
+
 
 /* =========================================================================================
                         TAREA POTENCIÓMETRO → ajusta brillo
@@ -192,7 +224,7 @@ void led_rgb_pot_task(void *pvParameters)
     int sample_index = 0;
     uint8_t last_brightness = 0xFF;
 
-    ESP_LOGI(TAG_POT, "Tarea del potenciómetro iniciada (solo control de brillo)");
+    ESP_LOGI(TAG_POT, "Tarea del potenciómetro iniciada (control de brillo y lectura opcional de voltaje)");
 
     while (1)
     {
@@ -216,7 +248,7 @@ void led_rgb_pot_task(void *pvParameters)
         if (avg_raw > 4095)
             avg_raw = 4095;
 
-        // Convertir a porcentaje 0–100
+        // Convertir a porcentaje 0–100 (control de brillo)
         uint8_t brightness = (avg_raw * 100) / 4095;
 
         // Solo actualizar si hay un cambio significativo
@@ -228,7 +260,15 @@ void led_rgb_pot_task(void *pvParameters)
             ESP_LOGI(TAG_POT, "Brillo actualizado: %d%%", brightness);
         }
 
-        // No se controla el LED aquí — lo hace led_rgb_temp_task()
+        // Impresión del voltaje si está habilitado mediante PREAD
+        bool pot_print = false;
+        if (xQueuePeek(sys->pot_print_enable_queue, &pot_print, 0) == pdTRUE && pot_print)
+        {
+            // Aproximación: V = raw/4095 * 3300 mV
+            uint32_t voltage_mv = (avg_raw * 3300UL) / 4095UL;
+            ESP_LOGI(TAG_POT, "Pot Raw=%d Voltage=%u mV (aprox)", avg_raw, voltage_mv);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(POT_TASK_DELAY_MS));
     }
 }

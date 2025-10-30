@@ -27,15 +27,34 @@ void app_main(void)
     sys.temp_range_queue = xQueueCreate(1, sizeof(rgb_temp_ranges_t)); // solo el último valor importa
     sys.led_mode_queue   = xQueueCreate(1, sizeof(led_mode_t));  // solo el último valor importa
     sys.print_enable_queue = xQueueCreate(1, sizeof(bool));      // cola para habilitar impresión
-    sys.led_mutex        = xSemaphoreCreateMutex();
+    sys.led_mutex        = xSemaphoreCreateMutex();               // mutex para proteger acceso al LED
+    sys.led_power_queue           = xQueueCreate(1, sizeof(bool));        // cola para LED ON/OFF (botón)
+    sys.temp_print_interval_queue = xQueueCreate(1, sizeof(uint32_t));  // cola para intervalo ms impresión temp
+    sys.pot_print_enable_queue    = xQueueCreate(1, sizeof(bool));      // cola para habilitar impresión voltaje potenciómetro
 
-    // configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex);
-    configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue && sys.temp_range_queue && sys.led_mutex && sys.print_enable_queue && sys.led_mode_queue);
+    // Validar todas las colas y el mutex
+    configASSERT(sys.rgb_cmd_queue && sys.brightness_queue && sys.temp_queue &&
+                 sys.temp_range_queue && sys.led_mutex &&
+                 sys.print_enable_queue && sys.led_mode_queue &&
+                 sys.led_power_queue && sys.temp_print_interval_queue &&
+                 sys.pot_print_enable_queue);
+
+    // Valores iniciales
     bool print_enabled_init = true;
     xQueueOverwrite(sys.print_enable_queue, &print_enabled_init);
-    // Crear tareas PASANDO &sys como pvParameters
+
+    bool led_on_init = true;
+    xQueueOverwrite(sys.led_power_queue, &led_on_init);
+
+    uint32_t temp_interval_init = 1000; // 1000 ms por defecto
+    xQueueOverwrite(sys.temp_print_interval_queue, &temp_interval_init);
+
+    bool pot_print_init = false;
+    xQueueOverwrite(sys.pot_print_enable_queue, &pot_print_init);
+
+    // Crear tareas, pasando &sys como pvParameters
     xTaskCreate(led_rgb_uart_task, "led_rgb_uart_task", 4096, &sys, 5, NULL);
     xTaskCreate(led_rgb_pot_task,  "led_rgb_pot_task", 4096, &sys, 5, NULL);
-    xTaskCreate(oneshot_read_task, "oneshot_task", 8192, &sys, 5, NULL);
+    xTaskCreate(oneshot_read_task, "oneshot_task",     8192, &sys, 5, NULL);
     xTaskCreate(led_rgb_temp_task, "led_rgb_temp_task", 4096, &sys, 5, NULL);
 }
