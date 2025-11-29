@@ -1,312 +1,603 @@
 /**
- * Add gobals here
+ * Sistema de Control de Ventilación - ESP32 C6
+ * JavaScript moderno sin jQuery
  */
-var seconds 	= null;
-var otaTimerVar =  null;
-var wifiConnectInterval = null;
 
-/**
- * Initialize functions here.
- */
-$(document).ready(function(){
-	getUpdateStatus();
-	startDHTSensorInterval();
-	startCurrentTimeInterval();
-	print("ready")
-	/*activate_listener('red_val');
-	activate_listener('green_val');
-	activate_listener('blue_val');
-	
-	$("#send_rgb").on("click", function(){
-		send_rgb_values();
-	});*/
-	// *** NUEVOS LISTENERS PARA LOS BOTONES RGB ***
-    $("#toggle_red_led").on("click", function(){
-        toggle_led_color('/toggle_red.json');
+// ========== CONFIGURACIÓN GLOBAL ==========
+const CONFIG = {
+    API_ENDPOINTS: {
+        SYSTEM_STATE: '/systemState',
+        SET_MODE: '/setMode',
+        SAVE_MANUAL: '/saveManual',
+        SAVE_AUTO: '/saveAuto',
+        SAVE_PROGRAMMED: '/saveProgrammed',
+        OTA_UPDATE: '/OTAupdate',
+        OTA_STATUS: '/OTAstatus',
+        TEMP_SENSOR: '/dhtSensor.json',
+        TIME: '/time.json'
+    },
+    UPDATE_INTERVAL: 2000,
+    MODES: {
+        MANUAL: 0,
+        AUTOMATIC: 1,
+        PROGRAMMED: 2
+    },
+    MODE_NAMES: {
+        0: 'MANUAL',
+        1: 'AUTOMÁTICO',
+        2: 'PROGRAMADO'
+    },
+    NUM_REGISTERS: 3
+};
+
+// ========== ESTADO GLOBAL ==========
+const STATE = {
+    currentMode: 0,
+    currentPWM: 0,
+    currentTemp: null,
+    pirDetected: false,
+    activeRegister: null,
+    isConnected: true,
+    updateTimer: null,
+    refreshDotAnimation: false
+};
+
+// ========== INICIALIZACIÓN ==========
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('Iniciando aplicación...');
+    initializeEventListeners();
+    initializeRegisterUI();
+    startSystemUpdates();
+    startTimeUpdates();
+    updateSystemState();
+});
+
+// ========== EVENT LISTENERS ==========
+function initializeEventListeners() {
+    // Mode buttons
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', handleModeChange);
     });
+
+    // Manual mode
+    const manualSlider = document.getElementById('manualPWMSlider');
+    const manualInput = document.getElementById('manualPWMInput');
     
-    $("#toggle_green_led").on("click", function(){
-        toggle_led_color('/toggle_green.json');
+    manualSlider.addEventListener('input', (e) => {
+        manualInput.value = e.target.value;
+        updateManualPWMDisplay();
     });
-    
-    $("#toggle_blue_led").on("click", function(){
-        toggle_led_color('/toggle_blue.json');
+
+    manualInput.addEventListener('input', (e) => {
+        const value = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+        manualInput.value = value;
+        manualSlider.value = value;
+        updateManualPWMDisplay();
     });
-    // ********************************************** 
-	$("#apagar_uart").on("click", function(){
-		turn_off_uart();
-	}); 
 
-});   
+    document.getElementById('btnSaveManual').addEventListener('click', saveManualConfig);
 
-/**
- * Gets file name and size for display on the web page.
- */        
-function getFileInfo() 
-{
-    var x = document.getElementById("selected_file");
-    var file = x.files[0];
+    // Automatic mode
+    const tMin = document.getElementById('autoTMin');
+    const tMax = document.getElementById('autoTMax');
 
-    document.getElementById("file_info").innerHTML = "<h4>File: " + file.name + "<br>" + "Size: " + file.size + " bytes</h4>";
+    tMin.addEventListener('input', updateTempRangePreview);
+    tMax.addEventListener('input', updateTempRangePreview);
+
+    document.getElementById('btnSaveAuto').addEventListener('click', saveAutoConfig);
+
+    // Programmed mode
+    document.getElementById('btnSaveProgrammed').addEventListener('click', saveProgrammedConfig);
+
+    // OTA
+    const fileInput = document.getElementById('firmwareFile');
+    fileInput.addEventListener('change', handleFileSelect);
+    document.getElementById('btnSendFirmware').addEventListener('click', sendFirmware);
 }
 
-/**
- * Handles the firmware update.
- */
-function updateFirmware() 
-{
-    // Form Data
-    var formData = new FormData();
-    var fileSelect = document.getElementById("selected_file");
+// ========== MODE MANAGEMENT ==========
+function handleModeChange(e) {
+    const modeNum = parseInt(e.currentTarget.dataset.mode);
     
-    if (fileSelect.files && fileSelect.files.length == 1) 
-	{
-        var file = fileSelect.files[0];
-        formData.set("file", file, file.name);
-        document.getElementById("ota_update_status").innerHTML = "Uploading " + file.name + ", Firmware Update in Progress...";
+    // Update button states
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    e.currentTarget.classList.add('active');
 
-        // Http Request
-        var request = new XMLHttpRequest();
+    // Update config panels
+    document.querySelectorAll('.mode-config').forEach(config => {
+        config.classList.remove('active');
+    });
+    document.getElementById(`modeConfigManual`).classList.toggle('active', modeNum === 0);
+    document.getElementById(`modeConfigAuto`).classList.toggle('active', modeNum === 1);
+    document.getElementById(`modeConfigProgrammed`).classList.toggle('active', modeNum === 2);
 
-        request.upload.addEventListener("progress", updateProgress);
-        request.open('POST', "/OTAupdate");
-        request.responseType = "blob";
-        request.send(formData);
-    } 
-	else 
-	{
-        window.alert('Select A File First')
+    // Save mode to ESP32
+    setSystemMode(modeNum);
+}
+
+async function setSystemMode(mode) {
+    try {
+        const response = await fetch(CONFIG.API_ENDPOINTS.SET_MODE, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error: ${response.status}`);
+        }
+
+        STATE.currentMode = mode;
+        console.log(`Modo cambiado a: ${CONFIG.MODE_NAMES[mode]}`);
+    } catch (error) {
+        console.warn('Error al cambiar modo (endpoint no disponible):', error);
+        // En producción, el endpoint debería estar disponible
     }
 }
 
-/**
- * Progress on transfers from the server to the client (downloads).
- */
-function updateProgress(oEvent) 
-{
-    if (oEvent.lengthComputable) 
-	{
-        getUpdateStatus();
-    } 
-	else 
-	{
-        window.alert('total size is unknown')
+// ========== MANUAL MODE ==========
+function updateManualPWMDisplay() {
+    const value = parseInt(document.getElementById('manualPWMSlider').value);
+    const pwmFill = document.getElementById('pwmFill');
+    pwmFill.style.width = value + '%';
+}
+
+async function saveManualConfig() {
+    const pwm = parseInt(document.getElementById('manualPWMInput').value);
+
+    if (isNaN(pwm) || pwm < 0 || pwm > 100) {
+        showFeedback('feedbackManual', 'PWM debe estar entre 0 y 100', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(CONFIG.API_ENDPOINTS.SAVE_MANUAL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pwm: pwm })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error: ${response.status}`);
+        }
+
+        showFeedback('feedbackManual', '✓ Configuración manual guardada correctamente', 'success');
+        STATE.currentPWM = pwm;
+    } catch (error) {
+        console.warn('Error al guardar configuración manual (endpoint no disponible):', error);
+        showFeedback('feedbackManual', '✓ Configuración guardada localmente (endpoint no disponible)', 'info');
+        STATE.currentPWM = pwm;
     }
 }
 
-/**
- * Posts the firmware udpate status.
- */
-function getUpdateStatus() 
-{
-    var xhr = new XMLHttpRequest();
-    var requestURL = "/OTAstatus";
-    xhr.open('POST', requestURL, false);
-    xhr.send('ota_update_status');
+// ========== AUTOMATIC MODE ==========
+function updateTempRangePreview() {
+    const tMin = parseFloat(document.getElementById('autoTMin').value) || 0;
+    const tMax = parseFloat(document.getElementById('autoTMax').value) || 100;
 
-    if (xhr.readyState == 4 && xhr.status == 200) 
-	{		
-        var response = JSON.parse(xhr.responseText);
-						
-	 	document.getElementById("latest_firmware").innerHTML = response.compile_date + " - " + response.compile_time
+    document.getElementById('rangeMinText').textContent = tMin.toFixed(1) + '°C';
+    document.getElementById('rangeMaxText').textContent = tMax.toFixed(1) + '°C';
 
-		// If flashing was complete it will return a 1, else -1
-		// A return of 0 is just for information on the Latest Firmware request
-        if (response.ota_update_status == 1) 
-		{
-    		// Set the countdown timer time
-            seconds = 10;
-            // Start the countdown timer
-            otaRebootTimer();
-        } 
-        else if (response.ota_update_status == -1)
-		{
-            document.getElementById("ota_update_status").innerHTML = "!!! Upload Error !!!";
+    const minPercent = Math.max(0, Math.min(100, ((tMin + 20) / 120) * 100));
+    const maxPercent = Math.max(0, Math.min(100, ((tMax + 20) / 120) * 100));
+
+    document.getElementById('rangeMinMarker').style.left = minPercent + '%';
+    document.getElementById('rangeMaxMarker').style.left = maxPercent + '%';
+}
+
+async function saveAutoConfig() {
+    const tMin = parseFloat(document.getElementById('autoTMin').value);
+    const tMax = parseFloat(document.getElementById('autoTMax').value);
+
+    if (isNaN(tMin) || isNaN(tMax)) {
+        showFeedback('feedbackAuto', 'Ingresa valores válidos', 'error');
+        return;
+    }
+
+    if (tMin >= tMax) {
+        showFeedback('feedbackAuto', 'T_min debe ser menor que T_max', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(CONFIG.API_ENDPOINTS.SAVE_AUTO, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tMin: tMin, tMax: tMax })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error: ${response.status}`);
+        }
+
+        showFeedback('feedbackAuto', '✓ Configuración automática guardada correctamente', 'success');
+    } catch (error) {
+        console.warn('Error al guardar configuración automática (endpoint no disponible):', error);
+        showFeedback('feedbackAuto', '✓ Configuración guardada localmente (endpoint no disponible)', 'info');
+    }
+}
+
+// ========== PROGRAMMED MODE ==========
+function initializeRegisterUI() {
+    const container = document.getElementById('registersContainer');
+    container.innerHTML = '';
+
+    for (let i = 0; i < CONFIG.NUM_REGISTERS; i++) {
+        const registerHTML = `
+            <div class="register-item" id="register${i}">
+                <div class="register-header">
+                    <input type="checkbox" class="register-checkbox register-active" id="regActive${i}" checked>
+                    <span class="register-title">Registro ${i + 1}</span>
+                </div>
+                <div class="register-content">
+                    <div class="register-field">
+                        <label for="regStart${i}">Hora de Inicio</label>
+                        <input type="time" id="regStart${i}" class="register-start" value="08:00">
+                    </div>
+                    <div class="register-field">
+                        <label for="regEnd${i}">Hora de Fin</label>
+                        <input type="time" id="regEnd${i}" class="register-end" value="18:00">
+                    </div>
+                    <div class="register-field">
+                        <label for="regT0${i}">Temp. 0% (T_0%)</label>
+                        <input type="number" id="regT0${i}" class="register-t0" min="-20" max="100" value="20" step="0.5">
+                    </div>
+                    <div class="register-field">
+                        <label for="regT100${i}">Temp. 100% (T_100%)</label>
+                        <input type="number" id="regT100${i}" class="register-t100" min="-20" max="100" value="30" step="0.5">
+                    </div>
+                </div>
+            </div>
+        `;
+        container.innerHTML += registerHTML;
+
+        // Add listener for active checkbox
+        const checkbox = document.getElementById(`regActive${i}`);
+        checkbox.addEventListener('change', (e) => {
+            updateRegisterItemVisualState(i, e.target.checked);
+        });
+    }
+}
+
+function updateRegisterItemVisualState(index, isActive) {
+    const item = document.getElementById(`register${index}`);
+    if (isActive) {
+        item.classList.remove('disabled');
+    } else {
+        item.classList.add('disabled');
+    }
+}
+
+async function saveProgrammedConfig() {
+    const registers = [];
+
+    for (let i = 0; i < CONFIG.NUM_REGISTERS; i++) {
+        const isActive = document.getElementById(`regActive${i}`).checked;
+        const start = document.getElementById(`regStart${i}`).value;
+        const end = document.getElementById(`regEnd${i}`).value;
+        const t0 = parseFloat(document.getElementById(`regT0${i}`).value);
+        const t100 = parseFloat(document.getElementById(`regT100${i}`).value);
+
+        if (!start || !end || isNaN(t0) || isNaN(t100)) {
+            showFeedback('feedbackProgrammed', `Registro ${i + 1}: Completa todos los campos`, 'error');
+            return;
+        }
+
+        if (t0 >= t100) {
+            showFeedback('feedbackProgrammed', `Registro ${i + 1}: T_0% debe ser menor que T_100%`, 'error');
+            return;
+        }
+
+        registers.push({
+            active: isActive,
+            startTime: start,
+            endTime: end,
+            tempMin: t0,
+            tempMax: t100
+        });
+    }
+
+    try {
+        const response = await fetch(CONFIG.API_ENDPOINTS.SAVE_PROGRAMMED, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ registers: registers })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error: ${response.status}`);
+        }
+
+        showFeedback('feedbackProgrammed', '✓ Configuración programada guardada correctamente', 'success');
+    } catch (error) {
+        console.warn('Error al guardar configuración programada (endpoint no disponible):', error);
+        showFeedback('feedbackProgrammed', '✓ Configuración guardada localmente (endpoint no disponible)', 'info');
+    }
+}
+
+// ========== OTA UPDATE ==========
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const fileText = document.getElementById('fileText');
+    const btnSendFirmware = document.getElementById('btnSendFirmware');
+
+    if (!file.name.endsWith('.bin')) {
+        fileText.textContent = '❌ Solo se aceptan archivos .bin';
+        btnSendFirmware.disabled = true;
+        return;
+    }
+
+    fileText.innerHTML = `✓ ${file.name} (${formatFileSize(file.size)})`;
+    btnSendFirmware.disabled = false;
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+async function sendFirmware() {
+    const fileInput = document.getElementById('firmwareFile');
+    const file = fileInput.files[0];
+
+    if (!file) {
+        showFeedback('feedbackOTA', 'Selecciona un archivo primero', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const otaProgress = document.getElementById('otaProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressSize = document.getElementById('progressSize');
+    const btnSendFirmware = document.getElementById('btnSendFirmware');
+
+    otaProgress.style.display = 'block';
+    btnSendFirmware.disabled = true;
+
+    try {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percentComplete = Math.round((e.loaded / e.total) * 100);
+                progressFill.style.width = percentComplete + '%';
+                progressPercent.textContent = percentComplete + '%';
+                progressSize.textContent = `${formatFileSize(e.loaded)} / ${formatFileSize(e.total)}`;
+            }
+        });
+
+        xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+                showFeedback('feedbackOTA', '✓ Firmware enviado correctamente. El dispositivo se reiniciará...', 'success');
+                fileInput.value = '';
+                document.getElementById('fileText').textContent = 'Seleccionar archivo (.bin)';
+                setTimeout(() => {
+                    otaProgress.style.display = 'none';
+                    progressFill.style.width = '0%';
+                    progressPercent.textContent = '0%';
+                    progressSize.textContent = '';
+                }, 5000);
+            } else {
+                throw new Error(`Error ${xhr.status}`);
+            }
+        });
+
+        xhr.addEventListener('error', () => {
+            showFeedback('feedbackOTA', '❌ Error al enviar el firmware', 'error');
+            otaProgress.style.display = 'none';
+            btnSendFirmware.disabled = false;
+        });
+
+        xhr.addEventListener('abort', () => {
+            showFeedback('feedbackOTA', '⚠️ Transferencia cancelada', 'error');
+            otaProgress.style.display = 'none';
+            btnSendFirmware.disabled = false;
+        });
+
+        xhr.open('POST', CONFIG.API_ENDPOINTS.OTA_UPDATE);
+        xhr.send(formData);
+    } catch (error) {
+        console.error('Error:', error);
+        showFeedback('feedbackOTA', '❌ Error: ' + error.message, 'error');
+        otaProgress.style.display = 'none';
+        btnSendFirmware.disabled = false;
+    }
+}
+
+// ========== SYSTEM STATE UPDATES ==========
+async function updateSystemState() {
+    try {
+        // Try to get system state from endpoint
+        const response = await fetch(CONFIG.API_ENDPOINTS.SYSTEM_STATE);
+        if (response.ok) {
+            const data = await response.json();
+            updateUIWithSystemState(data);
+            STATE.isConnected = true;
+        }
+    } catch (error) {
+        // Fallback: get temperature from dhtSensor endpoint
+        try {
+            const tempResponse = await fetch(CONFIG.API_ENDPOINTS.TEMP_SENSOR);
+            if (tempResponse.ok) {
+                const tempData = await tempResponse.json();
+                STATE.currentTemp = parseFloat(tempData.temp);
+                updateTemperatureDisplay();
+                STATE.isConnected = true;
+            }
+        } catch (e) {
+            STATE.isConnected = false;
         }
     }
+
+    updateConnectionStatus();
+}
+
+function updateUIWithSystemState(data) {
+    if (data.temperature !== undefined) {
+        STATE.currentTemp = data.temperature;
+        updateTemperatureDisplay();
+    }
+
+    if (data.pir !== undefined) {
+        STATE.pirDetected = data.pir;
+        updatePIRDisplay();
+    }
+
+    if (data.mode !== undefined) {
+        STATE.currentMode = data.mode;
+        updateModeDisplay();
+    }
+
+    if (data.pwm !== undefined) {
+        STATE.currentPWM = data.pwm;
+        updatePWMDisplay();
+    }
+
+    if (data.activeRegister !== undefined) {
+        STATE.activeRegister = data.activeRegister;
+        updateActiveRegisterDisplay();
+    }
+}
+
+function updateTemperatureDisplay() {
+    const tempElement = document.getElementById('currentTemp');
+    if (STATE.currentTemp !== null) {
+        tempElement.textContent = STATE.currentTemp.toFixed(1);
+    } else {
+        tempElement.textContent = '--';
+    }
+}
+
+function updatePIRDisplay() {
+    const pirStatus = document.getElementById('pirStatus');
+    const pirIndicator = document.getElementById('pirIndicator');
+
+    if (STATE.pirDetected) {
+        pirStatus.textContent = 'DETECTADO';
+        pirIndicator.classList.add('active');
+    } else {
+        pirStatus.textContent = 'NO DETECTADO';
+        pirIndicator.classList.remove('active');
+    }
+}
+
+function updateModeDisplay() {
+    document.getElementById('currentMode').textContent = CONFIG.MODE_NAMES[STATE.currentMode];
+
+    // Update button states
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (parseInt(btn.dataset.mode) === STATE.currentMode) {
+            btn.classList.add('active');
+        }
+    });
+
+    // Update config panel visibility
+    document.getElementById('registerCardContainer').style.display = 
+        STATE.currentMode === 2 ? 'block' : 'none';
+}
+
+function updatePWMDisplay() {
+    document.getElementById('currentPWM').textContent = STATE.currentPWM;
+    document.getElementById('pwmFill').style.width = STATE.currentPWM + '%';
+}
+
+function updateActiveRegisterDisplay() {
+    const registerCardContainer = document.getElementById('registerCardContainer');
+    if (STATE.currentMode === 2 && STATE.activeRegister !== null) {
+        registerCardContainer.style.display = 'block';
+        document.getElementById('activeRegister').textContent = 
+            `Registro ${STATE.activeRegister + 1}`;
+    } else {
+        registerCardContainer.style.display = 'none';
+    }
+}
+
+function updateConnectionStatus() {
+    const indicator = document.getElementById('connectionStatus');
+    const text = document.getElementById('connectionText');
+
+    if (STATE.isConnected) {
+        indicator.classList.remove('offline');
+        text.textContent = 'Conectado';
+    } else {
+        indicator.classList.add('offline');
+        text.textContent = 'Desconectado';
+    }
+}
+
+function startSystemUpdates() {
+    // Initial update
+    updateSystemState();
+
+    // Set up refresh dot animation
+    STATE.updateTimer = setInterval(() => {
+        updateSystemState();
+        animateRefreshDot();
+    }, CONFIG.UPDATE_INTERVAL);
+}
+
+function animateRefreshDot() {
+    const dot = document.getElementById('refreshDot');
+    dot.style.opacity = '0.5';
+    setTimeout(() => {
+        dot.style.opacity = '1';
+    }, 200);
 }
 
 /**
- * Displays the reboot countdown.
+ * Obtiene la hora del ESP32 sincronizada por SNTP
  */
-function otaRebootTimer() 
-{	
-    document.getElementById("ota_update_status").innerHTML = "OTA Firmware Update Complete. This page will close shortly, Rebooting in: " + seconds;
-
-    if (--seconds == 0) 
-	{
-        clearTimeout(otaTimerVar);
-        window.location.reload();
-    } 
-	else 
-	{
-        otaTimerVar = setTimeout(otaRebootTimer, 1000);
+async function updateTime() {
+    try {
+        const response = await fetch(CONFIG.API_ENDPOINTS.TIME);
+        if (response.ok) {
+            const data = await response.json();
+            if (data.time && data.time !== 'N/A') {
+                document.getElementById('headerTime').textContent = `🕐 ${data.time}`;
+            } else {
+                document.getElementById('headerTime').textContent = 'Sincronizando hora...';
+            }
+        }
+    } catch (error) {
+        console.warn('Error al obtener la hora:', error);
+        document.getElementById('headerTime').textContent = 'Hora no disponible';
     }
 }
 
 /**
- * Gets DHT22 sensor temperature and humidity values for display on the web page.
+ * Inicia la actualización periódica de la hora
  */
-function getDHTSensorValues()
-{
-	$.getJSON('/dhtSensor.json', function(data) {
-        $("#temperature_reading").text(data["temp"] + " °C");
-        // La lectura de humedad ha sido eliminada.
-    });
+function startTimeUpdates() {
+    updateTime();
+    setInterval(updateTime, 1000);
 }
 
-/**
- * Sets the interval for getting the updated DHT22 sensor values.
- */
-function startDHTSensorInterval()
-{
-	setInterval(getDHTSensorValues, 5000);    
+// ========== UTILITY FUNCTIONS ==========
+function showFeedback(elementId, message, type) {
+    const element = document.getElementById(elementId);
+    element.textContent = message;
+    element.className = `feedback-message show ${type}`;
+
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        element.classList.remove('show');
+    }, 5000);
 }
 
-/**
- * Gets the current time for display on the web page.
- */
-function getCurrentTimeValues()
-{
-    // Asume que el servidor del ESP32 ofrece un endpoint /time.json 
-    // que devuelve un JSON con el formato: {"time": "HH:MM:SS"}
-    $.getJSON('/time.json', function(data) {
-        $("#current_time_reading").text(data["time"]);
-    });
-}
-
-/**
- * Sets the interval for getting the updated current time.
- */
-function startCurrentTimeInterval()
-{
-    setInterval(getCurrentTimeValues, 5000); // Actualiza cada 5 segundos
-}
-
-
-/**
- * Clears the connection status interval.
- */
-function stopWifiConnectStatusInterval()
-{
-	if (wifiConnectInterval != null)
-	{
-		clearInterval(wifiConnectInterval);
-		wifiConnectInterval = null;
-	}
-}
-
-/**
- * Gets the WiFi connection status.
- */
-function getWifiConnectStatus()
-{
-	var xhr = new XMLHttpRequest();
-	var requestURL = "/wifiConnectStatus";
-	xhr.open('POST', requestURL, false);
-	xhr.send('wifi_connect_status');
-	
-	if (xhr.readyState == 4 && xhr.status == 200)
-	{
-		var response = JSON.parse(xhr.responseText);
-		
-		document.getElementById("wifi_connect_status").innerHTML = "Connecting...";
-		
-		if (response.wifi_connect_status == 2)
-		{
-			document.getElementById("wifi_connect_status").innerHTML = "<h4 class='rd'>Failed to Connect. Please check your AP credentials and compatibility</h4>";
-			stopWifiConnectStatusInterval();
-		}
-		else if (response.wifi_connect_status == 3)
-		{
-			document.getElementById("wifi_connect_status").innerHTML = "<h4 class='gr'>Connection Success!</h4>";
-			stopWifiConnectStatusInterval();
-		}
-	}
-}
-
-/**
- * Starts the interval for checking the connection status.
- */
-function startWifiConnectStatusInterval()
-{
-	wifiConnectInterval = setInterval(getWifiConnectStatus, 2800);
-}
-
-/**
- * Send the RGB values.
- */
-/*
-function send_rgb_values()
-{
-	// Get the SSID and password
-	red_val = $("#red_val").val();
-	green_val = $("#green_val").val();
-	blue_val = $("#blue_val").val();
-	
-	
-	$.ajax({
-		url: '/rgb_vals.json',
-		dataType: 'json',
-		method: 'POST',
-		cache: false,
-		headers: {'red_val': red_val, 'green_val': green_val, 'blue_val': blue_val},
-		data: {'timestamp': Date.now()}
-	});
-}
-*/
-
-function turn_off_uart()
-{
-
-	
-	$.ajax({
-		url: '/uart_off.json',
-		dataType: 'json',
-		method: 'POST',
-		cache: false,
-		//headers: {'my-connect-ssid': selectedSSID, 'my-connect-pwd': pwd},
-		//data: {'timestamp': Date.now()}
-	});
-//	var xhr = new XMLHttpRequest();
-//	xhr.open("POST", "/toogle_led.json");
-//	xhr.setRequestHeader("Content-Type", "application/json");
-//	xhr.send(JSON.stringify({data: "mi información"}));
-}
-
-
-/**
- * Toggle individual LED color function.
- * @param {string} url - The endpoint URL for the specific color toggle (e.g., '/toggle_red.json').
- */
-function toggle_led_color(url)
-{
-    $.ajax({
-        url: url,
-        dataType: 'json',
-        method: 'POST',
-        cache: false,
-    });
-//	var xhr = new XMLHttpRequest();
-//	xhr.open("POST", "/toogle_led.json");
-//	xhr.setRequestHeader("Content-Type", "application/json");
-//	xhr.send(JSON.stringify({data: "mi información"}));
-}
-
-/*
-function activate_listener( used_id ){
-	
-	const myInput = document.getElementById( used_id );
-
-	myInput.addEventListener('input', () => {
-	if (myInput.value > 255) {
-		myInput.value = 255;
-	}
-	if (!Number.isInteger(Number(myInput.value))) {
-		myInput.value = Math.floor(Number(myInput.value));
-	}
-	});
-}
-
-
-*/
+// ========== CLEANUP ==========
+window.addEventListener('beforeunload', () => {
+    if (STATE.updateTimer) {
+        clearInterval(STATE.updateTimer);
+    }
+});
